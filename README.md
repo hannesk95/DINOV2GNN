@@ -1,0 +1,1 @@
+# Slice-GNN: 2D Graph Neural Network for Parameter-Efficient 3D Medical Image Diagnosis

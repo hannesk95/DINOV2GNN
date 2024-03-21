@@ -1,0 +1,11 @@
+data_dir: /home/johannes/Code/DINOV2GNN/data/RADCURE
+spacing_aggregation: median
+target_dir: /home/johannes/Code/DINOV2GNN/data/RADCURE_preprocessed
+subvolume_aggregation: max
+min_HU: -900
+max_HU: 900
+num_slices: 16
+dinov2_model: facebook/dinov2-small
+label:
+  hpv-negative: 0
+  hpv-positive: 1

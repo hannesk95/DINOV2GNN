@@ -1,0 +1,7 @@
+__pycache__
+artifacts
+data/*/
+data/*.pt
+data/*.npz
+mlruns
+notebooks

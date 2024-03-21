@@ -1,0 +1,11 @@
+data_dir: /home/johannes/Code/DINOV2GNN/data/NSCLC
+spacing_aggregation: median
+target_dir: /home/johannes/Code/DINOV2GNN/data/NSCLC_preprocessed
+subvolume_aggregation: max
+min_HU: -900
+max_HU: 300
+num_slices: 16
+dinov2_model: facebook/dinov2-small
+label:
+  adeno: 0
+  squamous: 1
