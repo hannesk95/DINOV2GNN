@@ -24,7 +24,7 @@ class Preprocessor:
         self.dinov2_processor = AutoImageProcessor.from_pretrained(config.dinov2_model)
         self.dinov2_encoder = AutoModel.from_pretrained(config.dinov2_model).cuda()
 
-        if os.path.exists(self.config.target_dir):
+        if os.path.exists(self.config.target_dir):            
             sys.exit(f"\n[INFO] Target dir '{self.config.target_dir}' already exists!\n")
         else:
             os.makedirs(self.config.target_dir)
@@ -61,8 +61,8 @@ class Preprocessor:
             label = tio.LabelMap(label_path)
             label = tio.transforms.Resample(image)(label)
 
-            image = reorient(image)
-            label = reorient(label)
+            # image = reorient(image)
+            # label = reorient(label)
             image = resample(image)
             label = resample(label)
 
@@ -147,7 +147,7 @@ class Preprocessor:
         return volume
     
     
-    def subselct_volume(self, volume: torch.Tensor) -> np.ndarray:
+    def subselect_volume(self, volume: torch.Tensor) -> np.ndarray:
 
         middle_slice_idx = int(volume.shape[-1]/2)
         lower_idx = middle_slice_idx - int(self.config.num_slices/2)
@@ -172,7 +172,7 @@ class Preprocessor:
         
         return x.detach()
     
-    def get_graph_structure(self, volume: np.ndarray, encodings: torch.Tensor, label: int) -> torch_geometric.data.Data:
+    def get_graph_structure(self, volume: np.ndarray, encodings: torch.Tensor, label: int, split: str | None) -> torch_geometric.data.Data:
 
         num_slices = volume.shape[-1]
         middle_slice_idx = int(volume.shape[-1]/2)
@@ -196,31 +196,84 @@ class Preprocessor:
 
         edge_index, edge_weight = to_undirected(edge_index=edge_index, edge_attr=edge_weight)
 
-        data = torch_geometric.data.Data(x=encodings, edge_index=edge_index, edge_attr=edge_weight, label=label)
+        data = torch_geometric.data.Data(x=encodings.cpu(), edge_index=edge_index.cpu(), edge_attr=edge_weight.cpu(), label=label, split=split)
 
         return data
 
-
-def main(config: dict):
+def main_medmnist(config: Namespace):
 
     preprocessor = Preprocessor(config=config)
 
-    # 1. Get target spacing
-    target_spacing = preprocessor.get_target_spacing()
+    train_data = np.load(os.path.join(config.data_dir, "train_images.npy"))
+    train_labels = np.load(os.path.join(config.data_dir, "train_labels.npy"))
+    train_samples = train_data.shape[0]
 
-    # 2. Resample data
-    preprocessor.resample_volumes(target_spacing=target_spacing)
+    val_data = np.load(os.path.join(config.data_dir, "val_images.npy"))
+    val_labels = np.load(os.path.join(config.data_dir, "val_labels.npy"))
+    val_samples = val_data.shape[0]
 
-    # 3. Get biggest tumor subvolume
-    target_subvolume = preprocessor.get_target_subvolume()
+    test_data = np.load(os.path.join(config.data_dir, "test_images.npy"))
+    test_labels = np.load(os.path.join(config.data_dir, "test_labels.npy"))
+    test_samples = test_data.shape[0]
 
-    # 4. Center crop volumes
-    preprocessor.center_crop_volumes(target_subvolume=target_subvolume)
+    data = np.concatenate([train_data, val_data, test_data], axis=0)
+    labels = np.concatenate([train_labels, val_labels, test_labels], axis=0)
+
+    graphs = []
+    for idx, img_arr in tqdm(enumerate(data), desc="Final preprocessing "): 
+
+        label = labels[idx]
+        # Subselect volume
+        volume = preprocessor.subselect_volume(volume=torch.tensor(img_arr))
+
+        # Get DINOV2 encodings
+        encodings = preprocessor.get_dinov2_encodings(volume=volume)
+
+        # Create graph structure
+        data = preprocessor.get_graph_structure(volume=volume, encodings=encodings, label=label, split=None)
+        graphs.append(data)       
+
+    train_graphs = graphs[:train_samples]
+    val_graphs = graphs[train_samples:(train_samples+val_samples)]  
+    test_graphs = graphs[(train_samples+val_samples):]
+
+    # Save graphs into file
+    if os.path.exists(os.path.join(config.target_dir, "graph_data")):
+        shutil.rmtree(os.path.join(config.target_dir, "graph_data"))
+        os.makedirs(os.path.join(config.target_dir, "graph_data"))
+    else:
+        os.makedirs(os.path.join(config.target_dir, "graph_data"))
+
+    torch.save(train_graphs, os.path.join(config.target_dir, "graph_data", "train_graphs.pt"))
+    torch.save(val_graphs, os.path.join(config.target_dir, "graph_data", "val_graphs.pt"))
+    torch.save(test_graphs, os.path.join(config.target_dir, "graph_data", "test_graphs.pt"))
+
+
+def main_custom(config: Namespace):
+
+    preprocessor = Preprocessor(config=config)
+
+    # # 1. Get target spacing
+    # target_spacing = preprocessor.get_target_spacing()
+
+    # # 2. Resample data
+    # preprocessor.resample_volumes(target_spacing=target_spacing)
+
+    # # 3. Get biggest tumor subvolume
+    # target_subvolume = preprocessor.get_target_subvolume()
+
+    # # 4. Center crop volumes
+    # preprocessor.center_crop_volumes(target_subvolume=target_subvolume)
 
     graphs = []
     for img_path in tqdm(glob(os.path.join(config.target_dir, "*image*.nii.gz")), desc="Final preprocessing "):        
         volume = tio.ScalarImage(img_path).tensor.squeeze()
         label = config.label[img_path.split("/")[-1].split("_")[1]]
+        
+        if "RADCURE" in config.target_dir:
+            split = img_path.split("/")[-1].split("_")[2]
+        else:
+            split = None
 
         # 5. Clip CT-Hounsfield units
         volume = preprocessor.clip_hounsfield_units(volume=volume)
@@ -229,15 +282,19 @@ def main(config: dict):
         volume = preprocessor.min_max_scale(volume=volume)
 
         # 7. Subselect volume
-        volume = preprocessor.subselct_volume(volume=volume)
+        volume = preprocessor.subselect_volume(volume=volume)
+        img_name = img_path.split("/")[-1].replace(".nii.gz", ".npy")
+        np.save(f"/home/johannes/Code/DINOV2GNN/data/temp/{img_name}", volume)        
 
-        # 8. Get DINOV2 encodings
-        encodings = preprocessor.get_dinov2_encodings(volume=volume)
+        # # 8. Get DINOV2 encodings
+        # encodings = preprocessor.get_dinov2_encodings(volume=volume)
 
-        # 9. Create graph structure
-        data = preprocessor.get_graph_structure(volume=volume, encodings=encodings, label=label)
-        graphs.append(data)
+        # # 9. Create graph structure
+        # data = preprocessor.get_graph_structure(volume=volume, encodings=encodings, label=label, split=split)
+        # graphs.append(data)
     
+    sys.exit()
+
     # 10. Save graphs into file
     if os.path.exists(os.path.join(config.target_dir, "graph_data")):
         shutil.rmtree(os.path.join(config.target_dir, "graph_data"))
@@ -251,20 +308,39 @@ def main(config: dict):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-dataset', "--dataset", type=str, help="Name of the dataset", choices=['nodule', 'nsclc', 'radcure', 'sarcoma'], default='radcure')
+    parser.add_argument('-dataset', "--dataset", type=str, help="Name of the dataset", choices=['nodule', 'synapse', 'adrenal', 'vessel', 'organ', 'fracture', 'nsclc', 'radcure', 'sarcoma'], default='fracture')
     args = parser.parse_args()
 
     match args.dataset:
+        # MedMNIST Datasets
         case "nodule":
             config_file = "/home/johannes/Code/DINOV2GNN/data/nodule_config.yaml"
+        case "synapse":
+            config_file = "/home/johannes/Code/DINOV2GNN/data/synapse_config.yaml"
+        case "adrenal":
+            config_file = "/home/johannes/Code/DINOV2GNN/data/adrenal_config.yaml"
+        case "vessel":
+            config_file = "/home/johannes/Code/DINOV2GNN/data/vessel_config.yaml"
+        case "organ":
+            config_file = "/home/johannes/Code/DINOV2GNN/data/organ_config.yaml"
+        case "fracture":
+            config_file = "/home/johannes/Code/DINOV2GNN/data/fracture_config.yaml"
+        
+        # Custom Datatsets
         case "nsclc":
             config_file = "/home/johannes/Code/DINOV2GNN/data/nsclc_config.yaml"
         case "radcure":
             config_file = "/home/johannes/Code/DINOV2GNN/data/radcure_config.yaml"
         case "sts":
             config_file = "/home/johannes/Code/DINOV2GNN/data/sts_config.yaml"
+        case _:
+            raise NotImplementedError(f"Given dataset '{args.dataset} is not implemented!")
 
     with open(config_file, 'r') as file:
         config = Namespace(**yaml.safe_load(file))
 
-    main(config=config)
+    match args.dataset:
+        case "nodule" | "synapse" | "adrenal" | "vessel" | "organ" | "fracture":
+            main_medmnist(config=config)        
+        case _:
+            main_custom(config=config)

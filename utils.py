@@ -24,13 +24,13 @@ def set_seed(seed: int) -> None:
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:2"
 
 
-def save_conda_env(run_dir) -> None:
+def save_conda_env(config) -> None:
     """TODO: Docstring"""
 
     conda_env = os.environ['CONDA_DEFAULT_ENV']
-    command = f"conda env export -n {conda_env} > {run_dir}/environment.yml"
+    command = f"conda env export -n {conda_env} > {config.run_dir}/environment.yml"
     subprocess.call(command, shell=True)
-    # mlflow.log_artifact(f"{config.artifact_dir}{run_uuid}/environment.yml")
+    mlflow.log_artifact(f"{config.run_dir}/environment.yml")
 
 
 def create_confusion_matrix(y_true, y_pred):

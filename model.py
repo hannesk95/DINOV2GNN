@@ -10,6 +10,20 @@ from torch_geometric.nn import global_mean_pool
 import torch
 
 
+class Classifier(nn.Module):
+
+    def __init__(self, config):
+        super(Classifier, self).__init__()
+
+        self.config = config
+        self.classifier = nn.Sequential(nn.Linear(384, 288), nn.ReLU(), 
+                                        nn.Linear(288, 192), nn.ReLU(),
+                                        nn.Linear(192, config.n_classes))
+
+    def forward(self, x):
+        return self.classifier(x)
+
+
 class DINOv2(nn.Module):
 
      def __init__(self, config):
@@ -81,7 +95,7 @@ class GNN(torch.nn.Module):
             case _:
                 raise NotImplementedError("GNN type is not implemented!")
 
-        self.lin = Linear(self.config.hidden_channels, 2)
+        self.lin = Linear(self.config.hidden_channels, self.config.n_classes)
 
     def forward(self, data):
         # 1. Obtain node embeddings
