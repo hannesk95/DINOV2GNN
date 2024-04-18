@@ -1,4 +1,0 @@
-data_dir: /home/johannes/Code/DINOV2GNN/data/fracturemnist3d_64
-target_dir: /home/johannes/Code/DINOV2GNN/data/fracturemnist3d_64_preprocessed
-num_slices: 16
-dinov2_model: facebook/dinov2-small

@@ -21,6 +21,8 @@ class ParamConfigurator:
 
         # Data
         self.dataset = config['data']['dataset']
+        self.num_slices = config['data'].getint('num_slices')
+        self.fraction = config['data'].getfloat('fraction')
         self.artifact_dir = config['data']['artifact_directory']
 
         if not os.path.exists(self.artifact_dir):
@@ -36,10 +38,13 @@ class ParamConfigurator:
 
         # Architecture
         self.model_name = config['architecture']['model_name']
-        self.model_output = config['architecture']['model_output']
-        assert self.model_output in ['cls', 'max', 'mean']
+        # self.model_output = config['architecture']['model_output']
+        # assert self.model_output in ['cls', 'max', 'mean']
         self.hidden_channels = config['architecture'].getint('hidden_channels')
         self.gnn_type = config['architecture']['gnn_type']
+        self.gnn_readout = config['architecture']['gnn_readout']
+        self.mlp_aggregation = config['architecture']['mlp_aggregation']
+        self.mlp_conditional = config['architecture'].getboolean('mlp_conditional')
 
         match self.dataset:
             case "fracture":
@@ -53,6 +58,7 @@ class ParamConfigurator:
         self.batch_size = config['training'].getint('batch_size')
         self.epochs = config['training'].getint('epochs')
         self.num_workers = config['training'].getint('num_workers')        
+        self.ce_gamma = config['training'].getfloat('ce_gamma')
 
         # Optimizer
         self.learning_rate = config['optimizer'].getfloat('learning_rate')        

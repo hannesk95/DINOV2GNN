@@ -4,4 +4,6 @@ data/*/
 data/*.pt
 data/*.npz
 mlruns
+mlruns_old
 notebooks
+.vscode

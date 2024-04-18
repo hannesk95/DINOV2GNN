@@ -24,6 +24,8 @@ class Preprocessor:
         self.dinov2_processor = AutoImageProcessor.from_pretrained(config.dinov2_model)
         self.dinov2_encoder = AutoModel.from_pretrained(config.dinov2_model).cuda()
 
+        self.config.target_dir = self.config.target_dir + str(self.config.num_slices)
+
         if os.path.exists(self.config.target_dir):            
             sys.exit(f"\n[INFO] Target dir '{self.config.target_dir}' already exists!\n")
         else:
@@ -145,22 +147,59 @@ class Preprocessor:
         volume = (volume - torch.min(volume)) / (torch.max(volume)- torch.min(volume)) * 255
 
         return volume
+
+    # def subselect_volume(self, dim: int, volume: torch.Tensor) -> np.ndarray:
+
+    #     middle_slice_idx = int(volume.shape[-1]/2)
+    #     lower_idx = middle_slice_idx - int(self.config.num_slices/2)
+    #     upper_idx = middle_slice_idx + int(self.config.num_slices/2)
+
+    #     return volume[:, :, lower_idx:upper_idx].numpy().astype(np.uint8)
     
     
-    def subselect_volume(self, volume: torch.Tensor) -> np.ndarray:
+    def subselect_volume(self, volume: torch.Tensor, dim: int) -> np.ndarray:
 
         middle_slice_idx = int(volume.shape[-1]/2)
         lower_idx = middle_slice_idx - int(self.config.num_slices/2)
         upper_idx = middle_slice_idx + int(self.config.num_slices/2)
 
-        return volume[:, :, lower_idx:upper_idx].numpy().astype(np.uint8)
+        match dim:
+            case 0:
+                return volume[lower_idx:upper_idx, :, :].numpy().astype(np.uint8)
+            case 1:
+                return volume[:, lower_idx:upper_idx, :].numpy().astype(np.uint8)
+            case 2:
+                return volume[:, :, lower_idx:upper_idx].numpy().astype(np.uint8)        
 
 
-    def get_dinov2_encodings(self, volume: np.ndarray) -> torch.Tensor:
+    # def get_dinov2_encodings(self, volume: np.ndarray) -> torch.Tensor:
+
+    #     slices = []
+    #     for i in range(volume.shape[-1]):
+    #         img_slice = Image.fromarray(volume[:, :, i])
+    #         image = self.dinov2_processor(images=img_slice, return_tensors="pt")
+    #         image = image["pixel_values"]
+    #         slices.append(image)
+        
+    #     images = torch.concatenate(slices, dim=0).cuda()
+
+    #     x = self.dinov2_encoder(images)
+    #     x = self.dinov2_encoder.layernorm(x.pooler_output)
+        
+    #     return x.detach()
+    
+    def get_dinov2_encodings(self, volume: np.ndarray, dim: int) -> torch.Tensor:
 
         slices = []
-        for i in range(volume.shape[-1]):
-            img_slice = Image.fromarray(volume[:, :, i])
+        for i in range(volume.shape[dim]):
+            match dim:
+                case 0:
+                    img_slice = Image.fromarray(volume[i, :, :])
+                case 1:
+                    img_slice = Image.fromarray(volume[:, i, :])
+                case 2:
+                    img_slice = Image.fromarray(volume[:, :, i])
+            
             image = self.dinov2_processor(images=img_slice, return_tensors="pt")
             image = image["pixel_values"]
             slices.append(image)
@@ -196,7 +235,7 @@ class Preprocessor:
 
         edge_index, edge_weight = to_undirected(edge_index=edge_index, edge_attr=edge_weight)
 
-        data = torch_geometric.data.Data(x=encodings.cpu(), edge_index=edge_index.cpu(), edge_attr=edge_weight.cpu(), label=label, split=split)
+        data = torch_geometric.data.Data(x=encodings.cpu(), edge_index=edge_index.cpu(), edge_attr=edge_weight.cpu(), label=label, patient=split)
 
         return data
 
@@ -223,11 +262,15 @@ def main_medmnist(config: Namespace):
     for idx, img_arr in tqdm(enumerate(data), desc="Final preprocessing "): 
 
         label = labels[idx]
-        # Subselect volume
-        volume = preprocessor.subselect_volume(volume=torch.tensor(img_arr))
+        encodings_list = []
+        for dim in range(3):
+            # Subselect volume
+            volume = preprocessor.subselect_volume(volume=torch.tensor(img_arr), dim=dim)
 
-        # Get DINOV2 encodings
-        encodings = preprocessor.get_dinov2_encodings(volume=volume)
+            # Get DINOV2 encodings
+            encodings = preprocessor.get_dinov2_encodings(volume=volume, dim=dim)
+            encodings_list.append(encodings)
+        encodings = torch.concat(encodings_list, dim=1)
 
         # Create graph structure
         data = preprocessor.get_graph_structure(volume=volume, encodings=encodings, label=label, split=None)
@@ -254,26 +297,26 @@ def main_custom(config: Namespace):
     preprocessor = Preprocessor(config=config)
 
     # # 1. Get target spacing
-    # target_spacing = preprocessor.get_target_spacing()
+    target_spacing = preprocessor.get_target_spacing()
 
     # # 2. Resample data
-    # preprocessor.resample_volumes(target_spacing=target_spacing)
+    preprocessor.resample_volumes(target_spacing=target_spacing)
 
     # # 3. Get biggest tumor subvolume
-    # target_subvolume = preprocessor.get_target_subvolume()
+    target_subvolume = preprocessor.get_target_subvolume()
 
     # # 4. Center crop volumes
-    # preprocessor.center_crop_volumes(target_subvolume=target_subvolume)
+    preprocessor.center_crop_volumes(target_subvolume=target_subvolume)
 
     graphs = []
     for img_path in tqdm(glob(os.path.join(config.target_dir, "*image*.nii.gz")), desc="Final preprocessing "):        
         volume = tio.ScalarImage(img_path).tensor.squeeze()
-        label = config.label[img_path.split("/")[-1].split("_")[1]]
+        label = int(config.label[img_path.split("/")[-1].split("_")[1]])
         
         if "RADCURE" in config.target_dir:
             split = img_path.split("/")[-1].split("_")[2]
-        else:
-            split = None
+        elif "STS" in config.target_dir:
+            split = img_path.split("/")[-1][:4]
 
         # 5. Clip CT-Hounsfield units
         volume = preprocessor.clip_hounsfield_units(volume=volume)
@@ -283,17 +326,15 @@ def main_custom(config: Namespace):
 
         # 7. Subselect volume
         volume = preprocessor.subselect_volume(volume=volume)
-        img_name = img_path.split("/")[-1].replace(".nii.gz", ".npy")
-        np.save(f"/home/johannes/Code/DINOV2GNN/data/temp/{img_name}", volume)        
+        # img_name = img_path.split("/")[-1].replace(".nii.gz", ".npy")
+        # np.save(f"/home/johannes/Code/DINOV2GNN/data/temp/{img_name}", volume)        
 
         # # 8. Get DINOV2 encodings
-        # encodings = preprocessor.get_dinov2_encodings(volume=volume)
+        encodings = preprocessor.get_dinov2_encodings(volume=volume)
 
         # # 9. Create graph structure
-        # data = preprocessor.get_graph_structure(volume=volume, encodings=encodings, label=label, split=split)
-        # graphs.append(data)
-    
-    sys.exit()
+        data = preprocessor.get_graph_structure(volume=volume, encodings=encodings, label=label, split=split)
+        graphs.append(data)
 
     # 10. Save graphs into file
     if os.path.exists(os.path.join(config.target_dir, "graph_data")):
@@ -307,40 +348,52 @@ def main_custom(config: Namespace):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-dataset', "--dataset", type=str, help="Name of the dataset", choices=['nodule', 'synapse', 'adrenal', 'vessel', 'organ', 'fracture', 'nsclc', 'radcure', 'sarcoma'], default='fracture')
-    args = parser.parse_args()
 
-    match args.dataset:
-        # MedMNIST Datasets
-        case "nodule":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/nodule_config.yaml"
-        case "synapse":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/synapse_config.yaml"
-        case "adrenal":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/adrenal_config.yaml"
-        case "vessel":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/vessel_config.yaml"
-        case "organ":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/organ_config.yaml"
-        case "fracture":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/fracture_config.yaml"
-        
-        # Custom Datatsets
-        case "nsclc":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/nsclc_config.yaml"
-        case "radcure":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/radcure_config.yaml"
-        case "sts":
-            config_file = "/home/johannes/Code/DINOV2GNN/data/sts_config.yaml"
-        case _:
-            raise NotImplementedError(f"Given dataset '{args.dataset} is not implemented!")
+    for dataset in ['nodule', 'synapse', 'adrenal', 'vessel', 'organ', 'fracture']:
+        for num_slices in [8, 16, 24, 32, 48, 64]:
 
-    with open(config_file, 'r') as file:
-        config = Namespace(**yaml.safe_load(file))
 
-    match args.dataset:
-        case "nodule" | "synapse" | "adrenal" | "vessel" | "organ" | "fracture":
-            main_medmnist(config=config)        
-        case _:
-            main_custom(config=config)
+            parser = argparse.ArgumentParser()
+            parser.add_argument('-dataset', "--dataset", type=str, help="Name of the dataset", 
+                                choices=['nodule', 'synapse', 'adrenal', 'vessel', 'organ', 'fracture', 'nsclc', 'radcure', 'sts'], 
+                                default='synapse')
+            args = parser.parse_args()
+
+            args.dataset = dataset
+
+            match args.dataset:
+                # MedMNIST Datasets
+                case "nodule":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/MedMNIST/nodule_config.yaml"
+                case "synapse":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/MedMNIST/synapse_config.yaml"
+                case "adrenal":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/MedMNIST/adrenal_config.yaml"
+                case "vessel":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/MedMNIST/vessel_config.yaml"
+                case "organ":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/MedMNIST/organ_config.yaml"
+                case "fracture":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/MedMNIST/fracture_config.yaml"
+                
+                # Custom Datatsets
+                case "nsclc":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/Custom/nsclc_config.yaml"
+                case "radcure":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/Custom/radcure_config.yaml"
+                case "sts":
+                    config_file = "/home/johannes/Code/DINOV2GNN/data/Custom/sts_config.yaml"
+                case _:
+                    raise NotImplementedError(f"Given dataset '{args.dataset} is not implemented!")
+
+            with open(config_file, 'r') as file:
+                config = Namespace(**yaml.safe_load(file))
+            
+            config.num_slices = num_slices
+            config.target_dir = f"/home/johannes/Code/DINOV2GNN/data/MedMNIST/{dataset}mnist3d_64_preprocessed_ACS"
+
+            match args.dataset:
+                case "nodule" | "synapse" | "adrenal" | "vessel" | "organ" | "fracture":
+                    main_medmnist(config=config)        
+                case _:
+                    main_custom(config=config)
