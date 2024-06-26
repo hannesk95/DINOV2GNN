@@ -23,7 +23,10 @@ class ParamConfigurator:
         self.dataset = config['data']['dataset']
         self.num_slices = config['data'].getint('num_slices')
         self.fraction = config['data'].getfloat('fraction')
+        self.topology = config['data']['topology']
         self.artifact_dir = config['data']['artifact_directory']
+        self.k = config['data'].getint("k")
+        # self.similarity_metric = config['data']['similarity_metric']
 
         if not os.path.exists(self.artifact_dir):
             os.mkdir(self.artifact_dir)

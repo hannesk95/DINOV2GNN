@@ -58,7 +58,9 @@ def train(config) -> None:
             val_loader = DataLoader(dataset=val_dataset, batch_size=config.batch_size, num_workers=config.num_workers, shuffle=False, drop_last=True)   
             test_loader = DataLoader(dataset=test_dataset, batch_size=config.batch_size, num_workers=config.num_workers, shuffle=False, drop_last=True)
 
+    # criterion = torch.nn.CrossEntropyLoss().to(config.device)
     # criterion = torch.nn.CrossEntropyLoss(weight=train_dataset.class_weights).to(config.device)
+    # criterion = FocalLoss(gamma=config.ce_gamma, reduction='mean').to(config.device)
     criterion = FocalLoss(weight=train_dataset.class_weights, gamma=config.ce_gamma, reduction='mean').to(config.device)
     
     match config.optimizer:
@@ -80,10 +82,10 @@ def train(config) -> None:
     #######################
     # Training ############
     #######################
-    best_val_loss = float('inf')
-    best_val_bacc = float('-inf')
-    best_val_acc = float('-inf')
-    best_val_auc = float('-inf')    
+    # best_val_acc = float('-inf')
+    best_val_acc = 0
+    # best_val_auc = float('-inf')    
+    best_val_auc = 0    
 
     for epoch in range(1, config.epochs+1):
         train_loss_list = []
@@ -104,9 +106,9 @@ def train(config) -> None:
                         labels = labels.view(-1).to(config.device)
 
                     case "MLP":
-                        inputs = inputs.view(-1, inputs.shape[-1])
+                        # inputs = inputs.view(-1, inputs.shape[-1])
                         inputs = inputs.to(torch.float32).to(config.device)
-                        labels = labels.view(-1)
+                        # labels = labels.view(-1)
                         labels = labels.to(torch.long).to(config.device)
 
                     case "LSTM":
@@ -122,17 +124,22 @@ def train(config) -> None:
                 optimizer.zero_grad()
                 out = model(inputs)
 
-                if config.model_name == "MLP":
-                    match config.mlp_aggregation:
-                        case "mean":
-                            out = torch.concat([torch.mean(out[(i*config.num_slices):(i+1)*config.num_slices, :], dim=0).view(1, -1) for i in range(config.num_slices)])
-                            labels = labels[::config.num_slices]
-                        case "max":
-                            out = torch.concat([torch.max(out[(i*config.num_slices):(i+1)*config.num_slices, :], dim=0).values.view(1, -1) for i in range(config.num_slices)])
-                            labels = labels[::config.num_slices]
-                        case _:
-                            out = out
-                            labels = labels                
+                # if config.model_name == "MLP":
+                #     match config.mlp_aggregation:
+                #         case "mean":
+                #             # out = torch.concat([torch.mean(out[(i*config.num_slices):(i+1)*config.num_slices, :], dim=0).view(1, -1) for i in range(config.num_slices)])
+                            
+                #             out = torch.concat([torch.mean(temp, dim=0).view(1, -1) for temp in out], dim=0)
+                #             # labels = labels[::config.num_slices]
+                #             labels = labels.view(-1)
+                #         case "max":
+                #             out = torch.concat([torch.max(out[(i*config.num_slices):(i+1)*config.num_slices, :], dim=0).values.view(1, -1) for i in range(config.num_slices)])
+                #             # labels = labels[::config.num_slices]
+                #             labels = labels.view(-1)
+                #         case _:
+                #             out = out
+                #             labels = labels     
+                labels = labels.view(-1)           
 
                 if config.n_classes > 2:
                     score = torch.softmax(out, dim=1)
@@ -172,7 +179,7 @@ def train(config) -> None:
         mlflow.log_metric("val_auc", eval_auc, step=epoch)
         mlflow.log_metric("val_loss", eval_loss, step=epoch)
 
-        if eval_acc > best_val_acc:
+        if eval_acc >= best_val_acc:
             best_val_acc = eval_acc
             torch.save(model.state_dict(), os.path.join(config.run_dir, "best_model.pt"))
             mlflow.log_artifact(os.path.join(config.run_dir, "best_model.pt"))
@@ -207,9 +214,9 @@ def evaluate(config, model, dataloader, criterion) -> None:
                         labels = labels.view(-1).to(config.device)
 
                     case "MLP":
-                        inputs = inputs.view(-1, inputs.shape[-1])
+                        # inputs = inputs.view(-1, inputs.shape[-1])
                         inputs = inputs.to(torch.float32).to(config.device)
-                        labels = labels.view(-1)
+                        # labels = labels.view(-1)
                         labels = labels.to(torch.long).to(config.device)
                     
                     case "LSTM":
@@ -223,6 +230,23 @@ def evaluate(config, model, dataloader, criterion) -> None:
                         labels = labels.long().to(config.device)
                 
                 out = model(inputs)
+
+                # if config.model_name == "MLP":
+                #     match config.mlp_aggregation:
+                #         case "mean":
+                #             # out = torch.concat([torch.mean(out[(i*config.num_slices):(i+1)*config.num_slices, :], dim=0).view(1, -1) for i in range(config.num_slices)])
+                            
+                #             out = torch.concat([torch.mean(temp, dim=0).view(1, -1) for temp in out], dim=0)
+                #             # labels = labels[::config.num_slices]
+                #             labels = labels.view(-1)
+                #         case "max":
+                #             out = torch.concat([torch.max(out[(i*config.num_slices):(i+1)*config.num_slices, :], dim=0).values.view(1, -1) for i in range(config.num_slices)])
+                #             # labels = labels[::config.num_slices]
+                #             labels = labels.view(-1)
+                #         case _:
+                #             out = out
+                #             labels = labels    
+                labels = labels.view(-1)
 
                 loss = criterion(out, labels)
                 pred = torch.max(out, dim=1).indices
@@ -246,31 +270,39 @@ def evaluate(config, model, dataloader, criterion) -> None:
 
 if __name__ == "__main__":    
 
-    for dataset in ['organ', 'nodule', 'adrenal', 'vessel', 'synapse', 'fraction']:
-        for model_name in ['GNN', 'MLP', 'LSTM']:
-            for mlp_conditional in [True, False]:
-                for fraction in [0.125, 0.25, 0.375, 0.5, 0.75, 1.0]:
-                    for num_slices in [8, 16, 24, 32, 48, 64]:
+    for dataset in ['nodule', 'fracture', 'adrenal', 'vessel', 'synapse', 'organ']:
+        for model_name in ['MLP']:
+            for gnn_type in ['GATConv']:#, 'SAGEConv', 'GCNConv']:        
+                for topology in ["line"]:#, "fully", "custom", "star", "euclidean", "manhattan", "chebyshev", "cosine", "pearson"]:   
+                    for k in [3]:#, 5, 7]:
+                        for seed in [0, 28, 42]:
 
+                            if (topology in ["line", "fully", "custom", "star"]) & (k > 3):
+                                print("skip run!")
+                                continue                                        
 
-                        config = ParamConfigurator()
-                        config.dataset = dataset
-                        config.fraction = fraction
-                        config.num_slices = num_slices
-                        config.model_name = model_name
-                        config.mlp_conditional = mlp_conditional
+                            config = ParamConfigurator()
+                            config.dataset = dataset
+                            config.model_name = model_name
+                            config.gnn_type = gnn_type                            
+                            config.topology = topology 
+                            config.k = k
+                            config.seed = seed
+                            
 
-                        match config.dataset:
-                            case "fracture":
-                                config.n_classes = 3 
-                            case "organ":
-                                config.n_classes = 11
-                            case _:
-                                config.n_classes = 2
+                            match config.dataset:
+                                case "fracture":
+                                    config.n_classes = 3 
+                                case "organ":
+                                    config.n_classes = 11
+                                case _:
+                                    config.n_classes = 2
 
-                        set_seed(config.seed)
+                            set_seed(config.seed)
 
-                        mlflow.set_experiment(f'{config.model_name}_{config.dataset}_{config.num_slices}')
-                        date = str(datetime.now().strftime('%Y-%m-%d_%H:%M:%S'))
-                        with mlflow.start_run(run_name=date, log_system_metrics=True):
-                            train(config)
+                            
+                            # mlflow.set_experiment(f'{config.dataset}_{config.model_name}')
+                            mlflow.set_experiment(f'{config.model_name}')
+                            date = str(datetime.now().strftime('%Y-%m-%d_%H:%M:%S'))
+                            with mlflow.start_run(run_name=date, log_system_metrics=True):
+                                train(config)

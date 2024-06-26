@@ -5,11 +5,14 @@ from torch.nn import init
 from transformers import AutoModel, ViTModel
 from torch.nn import Linear
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, ChebConv, GraphConv, GATConv, SAGEConv
+from torch_geometric.nn import GCNConv, ChebConv, GraphConv, GATConv, SAGEConv, GINConv, DynamicEdgeConv
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool, global_sort_pool
-from torch_geometric.nn.pool import SAGPooling
+# from torch_geometric.nn.pool import SAGPooling
+from torch_geometric.nn.models import GIN
 import torch
 from torch.autograd import Variable
+from torch_geometric.nn.norm import BatchNorm, GraphNorm
+from torch_geometric.nn.aggr import AttentionalAggregation, SoftmaxAggregation, PowerMeanAggregation
 
 
 # class Classifier(nn.Module):
@@ -81,9 +84,13 @@ class MLP(nn.Module):
         else:
             input_dim = 1152
 
-        self.linear1 = nn.Linear(input_dim, 224)
-        self.linear2 = nn.Linear(224, 192)
-        self.linear3 = nn.Linear(192, config.n_classes)
+        # self.linear1 = nn.Linear(input_dim, 144)
+        # self.linear2 = nn.Linear(144, config.hidden_channels)
+        self.linear1 = nn.Linear(input_dim, config.hidden_channels)
+        self.linear3 = nn.Linear(config.hidden_channels, config.n_classes)
+        # self.linear1 = nn.Linear(input_dim, 224)
+        # self.linear2 = nn.Linear(224, 192)
+        # self.linear3 = nn.Linear(192, config.n_classes)
 
         self.relu = nn.ReLU()
 
@@ -91,8 +98,12 @@ class MLP(nn.Module):
 
         x = self.linear1(x)
         x = self.relu(x)
-        x = self.linear2(x)
-        x = self.relu(x)
+        # x = self.linear2(x)
+        # x = self.relu(x)
+
+        x = torch.mean(x, dim=1)
+
+        # x = F.dropout(x, p=0.5)#, training=self.training)
         x = self.linear3(x)
 
         return x  
@@ -112,10 +123,10 @@ class LSTM(torch.nn.Module):
 
     def forward(self, x):
 
-        h_0 = Variable(torch.zeros(3, x.size(0), self.hidden_size)).to(self.config.device) #hidden state
-        c_0 = Variable(torch.zeros(3, x.size(0), self.hidden_size)).to(self.config.device) #internal state
+        # h_0 = Variable(torch.zeros(3, x.size(0), self.hidden_size)).to(self.config.device) #hidden state
+        # c_0 = Variable(torch.zeros(3, x.size(0), self.hidden_size)).to(self.config.device) #internal state
         # Propagate input through LSTM
-        out, (hn, cn) = self.lstm(x, (h_0, c_0)) #lstm with input, hidden, and internal state
+        out, (hn, cn) = self.lstm(x) #lstm with input, hidden, and internal state
         # out = self.relu(out)
         out = self.fc(out[:, -1, :])
         # hn = hn.view(-1, 192) #reshaping the data for Dense layer next
@@ -135,59 +146,94 @@ class GNN(torch.nn.Module):
         match config.gnn_type:
             case "GCNConv":
                 self.conv1 = GCNConv(3*384, self.config.hidden_channels)
-                self.conv2 = GCNConv(self.config.hidden_channels, self.config.hidden_channels)
-                self.conv3 = GCNConv(self.config.hidden_channels, self.config.hidden_channels)
-            
-            case "ChebConv":
-                self.conv1 = ChebConv(3*384, self.config.hidden_channels, K=1)
-                self.conv2 = ChebConv(self.config.hidden_channels, self.config.hidden_channels, K=1)
-                self.conv3 = ChebConv(self.config.hidden_channels, self.config.hidden_channels, K=1)                
-
-            case "GraphConv":
-                self.conv1 = GraphConv(3*384, self.config.hidden_channels)
-                self.conv2 = GraphConv(self.config.hidden_channels, self.config.hidden_channels)
-                self.conv3 = GraphConv(self.config.hidden_channels, self.config.hidden_channels)
+                self.relu = nn.ReLU()
+                self.lin = Linear(self.config.hidden_channels, self.config.n_classes)
 
             case "GATConv":
                 self.conv1 = GATConv(3*384, self.config.hidden_channels)
-                self.conv2 = GATConv(self.config.hidden_channels, self.config.hidden_channels)
-                self.conv3 = GATConv(self.config.hidden_channels, self.config.hidden_channels)
+                self.relu = nn.ReLU()
+                self.lin = Linear(self.config.hidden_channels, self.config.n_classes)
 
-            case "SAGEConv":
-                self.conv1 = SAGEConv(3*384, self.config.hidden_channels)
-                self.conv2 = SAGEConv(self.config.hidden_channels, self.config.hidden_channels)
-                self.conv3 = SAGEConv(self.config.hidden_channels, self.config.hidden_channels)
+            case "SAGEConv":                
+                self.conv1 = SAGEConv(3*384, self.config.hidden_channels//2)
+                self.relu = nn.ReLU()
+                self.lin = Linear(self.config.hidden_channels//2, self.config.n_classes)
+            
+            # case "ChebConv":
+            #     self.conv1 = ChebConv(3*384, self.config.hidden_channels, K=1, aggr=SoftmaxAggregation(learn=True))
+            #     # self.bn1 = GraphNorm(self.config.hidden_channels)
+            #     # self.conv2 = ChebConv(self.config.hidden_channels, self.config.hidden_channels, K=1, aggr=SoftmaxAggregation(learn=True))
+            #     # self.bn2 = GraphNorm(self.config.hidden_channels)
+            #     # self.conv3 = ChebConv(self.config.hidden_channels, self.config.hidden_channels, K=1, aggr=SoftmaxAggregation(learn=True))
+            #     # self.bn3 = GraphNorm(self.config.hidden_channels)                
+
+            # case "GraphConv":
+            #     self.config.hidden_channels = int(self.config.hidden_channels / 2)
+            #     self.conv1 = GraphConv(3*384, self.config.hidden_channels)
+            #     self.conv2 = GraphConv(self.config.hidden_channels, self.config.hidden_channels)
+            #     self.conv3 = GraphConv(self.config.hidden_channels, self.config.hidden_channels)            
+            
+            # case "GINConv":
+            #     self.conv = GIN(3*384, hidden_channels=self.config.hidden_channels, num_layers=3, norm='BatchNorm')
+
+            # case "DynamicConv":
+            #     self.conv1 = DynamicEdgeConv(nn=torch.nn.Sequential(nn.Linear(2*3*384, self.config.hidden_channels), nn.ReLU()), k=6)
+            #     self.conv2 = DynamicEdgeConv(nn=torch.nn.Sequential(nn.Linear(2*self.config.hidden_channels, self.config.hidden_channels), nn.ReLU()), k=6)
+            #     self.conv3 = DynamicEdgeConv(nn=torch.nn.Sequential(nn.Linear(2*self.config.hidden_channels, self.config.hidden_channels), nn.ReLU()), k=6)
 
             case _:
                 raise NotImplementedError("GNN type is not implemented!")            
         
-        self.relu = nn.ReLU()
-        self.pool = SAGPooling(self.config.hidden_channels)
-        self.lin = Linear(self.config.hidden_channels, self.config.n_classes)
+        
 
     def forward(self, data):
         # 1. Obtain node embeddings
         match self.config.gnn_type:
-            case "SAGEConv":
-                x = self.conv1(x=data.x, edge_index=data.edge_index, )
+            case "SAGEConv" | "GCNConv" | "GATConv":
+                x = self.conv1(x=data.x, edge_index=data.edge_index)
                 x = self.relu(x)
-                x = self.conv2(x=x, edge_index=data.edge_index)
-                x = self.relu(x)
-                x = self.conv3(x=x, edge_index=data.edge_index)
+                # x = self.conv2(x=x, edge_index=data.edge_index)
+                # x = self.relu(x)
+                # x = self.conv3(x=x, edge_index=data.edge_index)
                 
-            case "GATConv":
-                x = self.conv1(x=data.x, edge_index=data.edge_index, edge_attr=data.edge_attr)
-                x = self.relu(x)
-                x = self.conv2(x=x, edge_index=data.edge_index, edge_attr=data.edge_attr)
-                x = self.relu(x)
-                x = self.conv3(x=x, edge_index=data.edge_index, edge_attr=data.edge_attr)
+            # case "GATConv":
+            #     x = self.conv1(x=data.x, edge_index=data.edge_index, edge_attr=data.edge_attr)
+            #     x = self.relu(x)
+            #     x = self.conv2(x=x, edge_index=data.edge_index, edge_attr=data.edge_attr)
+            #     x = self.relu(x)
+            #     x = self.conv3(x=x, edge_index=data.edge_index, edge_attr=data.edge_attr)
+
+            # case "GINConv":
+            #     x = self.conv(x=data.x, edge_index=data.edge_index)
             
-            case _:
-                x = self.conv1(x=data.x, edge_index=data.edge_index, edge_weight=data.edge_attr)
-                x = self.relu(x)               
-                x = self.conv2(x=x, edge_index=data.edge_index, edge_weight=data.edge_attr)
-                x = self.relu(x)
-                x = self.conv3(x=x, edge_index=data.edge_index, edge_weight=data.edge_attr)
+            # case "GCNConv":
+            #     x = self.conv1(x=data.x, edge_index=data.edge_index)
+            #     x = self.relu(x)
+
+            # case "DynamicConv":
+            #     x = self.conv1(x=data.x, batch=data.batch)
+            #     x = self.conv2(x=x, batch=data.batch)
+            #     x = self.conv3(x=x, batch=data.batch)
+            
+            # case "ChebConv":
+            #     x = self.conv1(x=data.x, edge_index=data.edge_index, edge_weight=data.edge_attr)
+            #     x = self.bn1(x)
+            #     x = self.relu(x)               
+            #     x = self.conv2(x=x, edge_index=data.edge_index, edge_weight=data.edge_attr)
+            #     x = self.bn2(x)
+            #     x = self.relu(x)
+            #     x = self.conv3(x=x, edge_index=data.edge_index, edge_weight=data.edge_attr)
+            #     x = self.bn3(x)
+
+            # case _:
+            #     x = self.conv1(x=data.x, edge_index=data.edge_index, edge_weight=data.edge_attr)
+            #     x = self.relu(x)               
+            #     # x = self.conv2(x=x, edge_index=data.edge_index, edge_weight=data.edge_attr)
+            #     # x = self.relu(x)
+            #     # x = self.conv3(x=x, edge_index=data.edge_index, edge_weight=data.edge_attr)
+            #     out = x
+
+
 
         # 2. Readout layer
         match self.config.gnn_readout:
@@ -202,13 +248,13 @@ class GNN(torch.nn.Module):
                 x = global_add_pool(x, data.batch)
             case "sort":
                 x = global_sort_pool(x, data.batch, k=8)
-            case "attention":
-                x = self.pool(x=x, edge_index=data.edge_index, edge_attr=data.edge_attr, batch=data.batch)[0]
+            # case "attention":
+            #     x = self.pool(x=x, edge_index=data.edge_index, edge_attr=data.edge_attr, batch=data.batch)[0]
             case _:
                 raise NotImplementedError("Readout function provided is not implemented!")
 
         # 3. Apply a final classifier
-        x = F.dropout(x, p=0.5, training=self.training)
+        # x = F.dropout(x, p=0.3)#, training=self.training)
         x = self.lin(x)
         
         return x
