@@ -10,7 +10,7 @@
 <sup>5</sup> King's College London, United Kingdom
 
 
-Accepted at [MICCAI 2024 - Workshop on GRaphs in biomedicAl Image anaLysis (GRAIL)](https://grail-miccai.github.io/)
+Accepted at [MICCAI 2024 - Workshop on GRaphs in biomedicAl Image anaLysis (GRAIL)](https://grail-miccai.github.io/) | [preprint](https://arxiv.org/pdf/2407.17219)
 
 <p align="center">
   <img src="./figures/method.png" width="800"/>
